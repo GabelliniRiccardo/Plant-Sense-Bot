@@ -13,7 +13,50 @@ const waitingForEspCode = {}; // { userId: true }
 
 // Start the bot
 bot.start((ctx) => {
-    ctx.reply("Welcome! Send your ESP32 code to register it.");
+    ctx.reply("Welcome! Please choose an option:", {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: "Register ESP32", callback_data: "register" },
+                    { text: "Check Irrigation Status", callback_data: "status" },
+                ],
+                [{ text: "Help", callback_data: "help" }],
+            ],
+        },
+    });
+});
+
+// Handle button clicks
+bot.on("callback_query", (ctx) => {
+    const action = ctx.callbackQuery.data;
+
+    if (action === "register") {
+        const userId = ctx.from.id;
+        waitingForEspCode[userId] = true;
+
+        ctx.reply("Please send your ESP32 code (e.g., ESP_ABC123) to register it.");
+    } else if (action === "status") {
+        const userId = ctx.from.id;
+        const espCode = Object.keys(users).find((code) => users[code] === userId);
+
+        if (!espCode) {
+            return ctx.reply(
+                "You have no registered ESP32. Please register it first using /register.",
+            );
+        }
+
+        const message = `Irrigation status for ESP32 (${espCode}): Active ✅`;
+        ctx.reply(message);
+    } else if (action === "help") {
+        const helpMessage = `
+        🤖 **Available Commands:**
+
+        /help - Show this help message
+        /register - Register your ESP32 device
+        /status - Get the current irrigation status for your ESP32
+        `;
+        ctx.reply(helpMessage);
+    }
 });
 
 // Command for showing help
@@ -36,24 +79,6 @@ bot.command("register", (ctx) => {
     waitingForEspCode[userId] = true;
 
     ctx.reply("Please send your ESP32 code (e.g., ESP_ABC123) to register it.");
-});
-
-// Command for checking irrigation status
-bot.command("status", (ctx) => {
-    const userId = ctx.from.id;
-    const espCode = Object.keys(users).find((code) => users[code] === userId);
-
-    if (!espCode) {
-        return ctx.reply(
-            "You have no registered ESP32. Please register it first using /register.",
-        );
-    }
-
-    // For now, just return a dummy message about irrigation status
-    const message = `Irrigation status for ESP32 (${espCode}): Active ✅`;
-
-    // Send the status message to the user
-    ctx.reply(message);
 });
 
 // Listen for any message that could be the ESP32 code
@@ -123,13 +148,15 @@ app.post("/notify", (req, res) => {
     const telegramId = users[esp_code];
 
     // Send the message to Telegram
-    bot.telegram.sendMessage(telegramId, message);
-
-    // Respond to the client
-    res.json({ success: true });
+    bot.telegram.sendMessage(telegramId, message)
+        .then(() => {
+            res.json({ success: true });
+        })
+        .catch((error) => {
+            console.error("Error sending message:", error);
+            res.status(500).json({ error: "Failed to send message" });
+        });
 });
-
-bot.launch();
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -137,4 +164,11 @@ app.get("/health", (req, res) => {
 });
 
 // Start the server
-app.listen(3000, () => console.log("Server started on port 3000"));
+app.listen(process.env.PORT || 3000, () => {
+    console.log("Server started on port", process.env.PORT || 3000);
+});
+
+// Launch the bot
+bot.launch()
+    .then(() => console.log("Telegram bot started"))
+    .catch((err) => console.error("Failed to start the bot:", err));
