@@ -1,15 +1,47 @@
-require("dotenv").config();
-const express = require("express");
-const { Telegraf } = require("telegraf");
+import dotenv from "dotenv";
+import express from "express";
+import { Telegraf } from "telegraf";
+
+// Import Firebase SDK
+import { initializeApp } from "firebase/app";
+import {
+    getFirestore,
+    doc,
+    getDoc,
+    setDoc,
+    updateDoc,
+    deleteDoc,
+    collection,
+    query,
+    where,
+    getDocs,
+} from "firebase/firestore";
+
+// Initialize dotenv
+dotenv.config();
 
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// Firebase config
+const firebaseConfig = {
+    apiKey: process.env.FIREBASE_API_KEY,
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+    appId: process.env.FIREBASE_APP_ID,
+    measurementId: process.env.FIREBASE_MEASUREMENT_ID,
+};
+// Initialize Firebase
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
 app.use(express.json());
 
-// In-memory database (for testing purposes, better to use a real database)
-const users = {}; // { "ESP_CODE_123": telegram_id }
-const waitingForEspCode = {}; // { userId: true }
+// In-memory database (for testing purposes) => replaced with Firestore
+// const users = {}; // { "ESP_CODE_123": telegram_id }
+// const waitingForEspCode = {}; // { userId: true }
 
 // Start the bot
 bot.start((ctx) => {
@@ -37,19 +69,29 @@ bot.on("callback_query", async (ctx) => {
     await ctx.answerCbQuery();
 
     if (action === "register") {
-        waitingForEspCode[ctx.from.id] = true;
+        // Store in Firestore to mark user as waiting for ESP code
+        const userId = ctx.from.id;
+        const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
+        await setDoc(waitingRef, { waiting: true });
+
         ctx.reply(
             "Please send your ESP32 code (e.g., ESP_ABC123) to register it.",
         );
     } else if (action === "status") {
-        const espCode = Object.keys(users).find(
-            (code) => users[code] === ctx.from.id,
-        );
-        if (!espCode) {
+        const userId = ctx.from.id;
+
+        // Query Firestore to find ESP32 associated with this user
+        const usersRef = collection(db, "users");
+        const q = query(usersRef, where("telegram_id", "==", userId));
+        const querySnapshot = await getDocs(q);
+
+        if (querySnapshot.empty) {
             return ctx.reply(
                 "You have no registered ESP32. Please register it first using /register.",
             );
         }
+
+        const espCode = querySnapshot.docs[0].data().esp_code;
         const message = `Irrigation status for ESP32 (${espCode}): Active ✅`;
         ctx.reply(message);
     } else if (action === "help") {
@@ -81,23 +123,31 @@ bot.command("help", (ctx) => {
 bot.command("register", (ctx) => {
     const userId = ctx.from.id;
 
-    // Mark the user as waiting for the ESP32 code
-    waitingForEspCode[userId] = true;
+    // Mark the user as waiting for the ESP32 code in Firestore
+    const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
+    setDoc(waitingRef, { waiting: true });
 
     ctx.reply("Please send your ESP32 code (e.g., ESP_ABC123) to register it.");
 });
 
 // Listen for any message that could be the ESP32 code
-bot.on("message", (ctx) => {
+bot.on("message", async (ctx) => {
     const userId = ctx.from.id;
     const message = ctx.message.text.trim();
 
-    // Check if the user is in the process of registering
-    if (waitingForEspCode[userId]) {
+    // Check if the user is in the process of registering (check Firestore)
+    const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
+    const docSnap = await getDoc(waitingRef);
+
+    if (docSnap.exists() && docSnap.data().waiting) {
         if (message.startsWith("ESP_")) {
-            // Register the ESP32 code for the user
-            users[message] = userId;
-            delete waitingForEspCode[userId]; // Reset the state
+            // Register the ESP32 code for the user in Firestore
+            const usersRef = doc(db, "users", message);
+            await setDoc(usersRef, { esp_code: message, telegram_id: userId });
+
+            // Remove the waiting status from Firestore
+            await deleteDoc(waitingRef);
+
             ctx.reply(`Your ESP32 (${message}) has been registered.`);
         } else {
             ctx.reply(
@@ -108,7 +158,7 @@ bot.on("message", (ctx) => {
 });
 
 // Endpoint to receive data from the ESP32
-app.post("/notify", (req, res) => {
+app.post("/notify", async (req, res) => {
     const {
         esp_code,
         airTemp,
@@ -123,9 +173,17 @@ app.post("/notify", (req, res) => {
     } = req.body;
 
     // Check if the ESP32 is registered
-    if (!users[esp_code]) {
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("esp_code", "==", esp_code));
+    const querySnapshot = await getDocs(q);
+
+
+    if (querySnapshot.empty) {
         return res.status(400).json({ error: "ESP32 not registered" });
     }
+
+    // Get the Telegram ID associated with the ESP32
+    const telegramId = querySnapshot.docs[0].data().telegram_id;
 
     // Create the message to send
     const message = `
@@ -144,9 +202,6 @@ app.post("/notify", (req, res) => {
     Irrigation Status:
     - 💧 Irrigation: ${isIrrigating ? "Active ✅" : "Inactive ❌"}
     `;
-
-    // Get the Telegram ID associated with the ESP32
-    const telegramId = users[esp_code];
 
     // Send the message to Telegram
     bot.telegram
