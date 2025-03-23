@@ -18,7 +18,10 @@ bot.start((ctx) => {
             inline_keyboard: [
                 [
                     { text: "Register ESP32", callback_data: "register" },
-                    { text: "Check Irrigation Status", callback_data: "status" },
+                    {
+                        text: "Check Irrigation Status",
+                        callback_data: "status",
+                    },
                 ],
                 [{ text: "Help", callback_data: "help" }],
             ],
@@ -26,25 +29,27 @@ bot.start((ctx) => {
     });
 });
 
-// Handle button clicks
-bot.on("callback_query", (ctx) => {
+// Handle callback queries (button clicks)
+bot.on("callback_query", async (ctx) => {
     const action = ctx.callbackQuery.data;
 
+    // Conferma la ricezione della callback per evitare che il messaggio venga duplicato
+    await ctx.answerCbQuery();
+
     if (action === "register") {
-        const userId = ctx.from.id;
-        waitingForEspCode[userId] = true;
-
-        ctx.reply("Please send your ESP32 code (e.g., ESP_ABC123) to register it.");
+        waitingForEspCode[ctx.from.id] = true;
+        ctx.reply(
+            "Please send your ESP32 code (e.g., ESP_ABC123) to register it.",
+        );
     } else if (action === "status") {
-        const userId = ctx.from.id;
-        const espCode = Object.keys(users).find((code) => users[code] === userId);
-
+        const espCode = Object.keys(users).find(
+            (code) => users[code] === ctx.from.id,
+        );
         if (!espCode) {
             return ctx.reply(
                 "You have no registered ESP32. Please register it first using /register.",
             );
         }
-
         const message = `Irrigation status for ESP32 (${espCode}): Active ✅`;
         ctx.reply(message);
     } else if (action === "help") {
@@ -55,6 +60,7 @@ bot.on("callback_query", (ctx) => {
         /register - Register your ESP32 device
         /status - Get the current irrigation status for your ESP32
         `;
+        // Rispondi con il messaggio completo di help
         ctx.reply(helpMessage);
     }
 });
@@ -108,14 +114,11 @@ app.post("/notify", (req, res) => {
         airTemp,
         airHumidity,
         soilMoisture,
-        lightIntensity,
         minAirTemp,
         maxAirTemp,
         minAirHumidity,
         maxAirHumidity,
         minSoilMoisture,
-        minLightIntensity,
-        maxLightIntensity,
         isIrrigating, // Changed to use a boolean
     } = req.body;
 
@@ -132,13 +135,11 @@ app.post("/notify", (req, res) => {
     - 🌡️ Air Temperature: ${airTemp}°C
     - 💧 Air Humidity: ${airHumidity}%
     - 🌿 Soil Moisture: ${soilMoisture}%
-    - 💡 Light Intensity: ${lightIntensity} lux
 
     Optimal Ranges:
     - 🌡️ Air Temperature: ${minAirTemp}°C - ${maxAirTemp}°C
     - 💧 Air Humidity: ${minAirHumidity}% - ${maxAirHumidity}%
     - 🌿 Soil Moisture: ${minSoilMoisture}%
-    - 💡 Light Intensity: ${minLightIntensity} lux - ${maxLightIntensity} lux
 
     Irrigation Status:
     - 💧 Irrigation: ${isIrrigating ? "Active ✅" : "Inactive ❌"}
@@ -148,7 +149,8 @@ app.post("/notify", (req, res) => {
     const telegramId = users[esp_code];
 
     // Send the message to Telegram
-    bot.telegram.sendMessage(telegramId, message)
+    bot.telegram
+        .sendMessage(telegramId, message)
         .then(() => {
             res.json({ success: true });
         })
