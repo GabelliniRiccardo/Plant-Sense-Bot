@@ -1,247 +1,120 @@
-import dotenv from "dotenv";
-import express from "express";
 import { Telegraf } from "telegraf";
+import mqtt from "mqtt";
+import dotenv from "dotenv";
 
-// Import Firebase SDK
-import { initializeApp } from "firebase/app";
-import {
-    getFirestore,
-    doc,
-    getDoc,
-    setDoc,
-    updateDoc,
-    deleteDoc,
-    collection,
-    query,
-    where,
-    getDocs,
-} from "firebase/firestore";
-
-// Initialize dotenv
 dotenv.config();
 
-const app = express();
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const MQTT_BROKER = process.env.MQTT_BROKER;
 
-// Firebase config
-const firebaseConfig = {
-    apiKey: process.env.FIREBASE_API_KEY,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.FIREBASE_APP_ID,
-    measurementId: process.env.FIREBASE_MEASUREMENT_ID,
-};
-// Initialize Firebase
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
+const bot = new Telegraf(BOT_TOKEN);
+const mqttClient = mqtt.connect(MQTT_BROKER);
 
-app.use(express.json());
+// Map to associate ESP32 devices with Telegram users
+const espToChatMap = new Map();
 
-// In-memory database (for testing purposes) => replaced with Firestore
-// const users = {}; // { "ESP_CODE_123": telegram_id }
-// const waitingForEspCode = {}; // { userId: true }
-
-// Start the bot
-bot.start((ctx) => {
-    ctx.reply("Welcome! Please choose an option:", {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: "Register ESP32", callback_data: "register" },
-                    {
-                        text: "Check Irrigation Status",
-                        callback_data: "status",
-                    },
-                ],
-                [{ text: "Help", callback_data: "help" }],
-            ],
-        },
-    });
-    console.log("Bot started: User started interaction.");
+// Connect to the MQTT broker
+mqttClient.on("connect", () => {
+    console.log("✅ Connected to the MQTT broker");
+    mqttClient.subscribe("esp32/status"); // Subscribe to receive updates from ESP32
 });
 
-// Handle callback queries (button clicks)
-bot.on("callback_query", async (ctx) => {
-    const action = ctx.callbackQuery.data;
+// When an MQTT message is received
+mqttClient.on("message", (topic, message) => {
+    console.log(`📩 Message received on ${topic}: ${message.toString()}`);
 
-    // Confirm callback reception to prevent message duplication
-    await ctx.answerCbQuery();
-    console.log(`User action received: ${action}`);
+    if (topic === "esp32/status") {
+        const data = JSON.parse(message.toString());
+        const chatId = espToChatMap.get(data.esp_code);
 
-    if (action === "register") {
-        // Store in Firestore to mark user as waiting for ESP code
-        const userId = ctx.from.id;
-        const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
-        await setDoc(waitingRef, { waiting: true });
+        if (chatId) {
+            const telegramMessage = `
+                🌱 Irrigation Status for ESP32 (${data.esp_code})
 
-        ctx.reply(
-            "Please send your ESP32 code (e.g., ESP_ABC123) to register it.",
-        );
-        console.log(`User ${userId} started registration process.`);
-    } else if (action === "status") {
-        const userId = ctx.from.id;
+                Current Values:
+                - 🌡️ Air Temperature: ${data.airTemp}°C
+                - 💧 Air Humidity: ${data.airHumidity}%
+                - 🌿 Soil Moisture: ${data.soilMoisture}%
 
-        // Query Firestore to find ESP32 associated with this user
-        const usersRef = collection(db, "users");
-        const q = query(usersRef, where("telegram_id", "==", userId));
-        const querySnapshot = await getDocs(q);
+                Optimal Ranges:
+                - 🌡️ Air Temperature: ${data.minAirTemp}°C - ${data.maxAirTemp}°C
+                - 💧 Air Humidity: ${data.minAirHumidity}% - ${data.maxAirHumidity}%
+                - 🌿 Soil Moisture: ${data.minSoilMoisture}%
 
-        if (querySnapshot.empty) {
-            ctx.reply(
-                "You have no registered ESP32. Please register it first using /register.",
-            );
-            console.log(`User ${userId} has no registered ESP32.`);
-            return;
-        }
-
-        const espCode = querySnapshot.docs[0].data().esp_code;
-        const message = `Irrigation status for ESP32 (${espCode}): Active ✅`;
-        ctx.reply(message);
-        console.log(
-            `User ${userId} requested irrigation status for ESP32 ${espCode}.`,
-        );
-    } else if (action === "help") {
-        const helpMessage = `
-            🤖 **Available Commands:**
-
-            /help - Show this help message
-            /register - Register your ESP32 device
-            /status - Get the current irrigation status for your ESP32
+                Irrigation Status:
+                - 💧 Irrigation: ${data.isIrrigating ? "Active ✅" : "Inactive ❌"}
             `;
-        // Reply with the complete help message
-        ctx.reply(helpMessage);
-        console.log(`User requested help.`);
-    }
-});
 
-// Command for showing help
-bot.command("help", (ctx) => {
-    const helpMessage = `
-        🤖 **Available Commands:**
-
-        /help - Show this help message
-        /register - Register your ESP32 device
-        /status - Get the current irrigation status for your ESP32
-        `;
-    ctx.reply(helpMessage);
-    console.log(`Help command used.`);
-});
-
-// Command for registering ESP32
-bot.command("register", (ctx) => {
-    const userId = ctx.from.id;
-
-    // Mark the user as waiting for the ESP32 code in Firestore
-    const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
-    setDoc(waitingRef, { waiting: true });
-
-    ctx.reply("Please send your ESP32 code (e.g., ESP_ABC123) to register it.");
-    console.log(`User ${userId} initiated ESP32 registration process.`);
-});
-
-// Listen for any message that could be the ESP32 code
-bot.on("message", async (ctx) => {
-    const userId = ctx.from.id;
-    const message = ctx.message.text.trim();
-
-    // Check if the user is in the process of registering (check Firestore)
-    const waitingRef = doc(db, "waitingForEspCode", `${userId}`);
-    const docSnap = await getDoc(waitingRef);
-
-    if (docSnap.exists() && docSnap.data().waiting) {
-        if (message.startsWith("ESP_")) {
-            // Register the ESP32 code for the user in Firestore
-            const usersRef = doc(db, "users", message);
-            await setDoc(usersRef, { esp_code: message, telegram_id: userId });
-
-            // Remove the waiting status from Firestore
-            await deleteDoc(waitingRef);
-
-            ctx.reply(`Your ESP32 (${message}) has been registered.`);
-            console.log(`User ${userId} registered ESP32 (${message}).`);
+            bot.telegram.sendMessage(chatId, telegramMessage);
         } else {
-            ctx.reply(
-                "Invalid code. Please send a valid ESP32 code (e.g., ESP_ABC123).",
-            );
-            console.log(`User ${userId} sent invalid code: ${message}`);
+            console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
         }
     }
 });
 
-// Endpoint to receive data from the ESP32
-app.post("/notify", async (req, res) => {
-    const {
-        esp_code,
-        airTemp,
-        airHumidity,
-        soilMoisture,
-        minAirTemp,
-        maxAirTemp,
-        minAirHumidity,
-        maxAirHumidity,
-        minSoilMoisture,
-        isIrrigating, // Changed to use a boolean
-    } = req.body;
-
-    // Check if the ESP32 is registered
-    const usersRef = collection(db, "users");
-    const q = query(usersRef, where("esp_code", "==", esp_code));
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
-        return res.status(400).json({ error: "ESP32 not registered" });
+// Command to register the ESP32 with the Telegram user
+bot.command("register", (ctx) => {
+    const args = ctx.message.text.split(" ");
+    if (args.length !== 2) {
+        ctx.reply(
+            "❌ Use the command /register <ESP_XXXXXXXX> to register your ESP32.",
+        );
+        return;
     }
 
-    // Get the Telegram ID associated with the ESP32
-    const telegramId = querySnapshot.docs[0].data().telegram_id;
+    const espCode = args[1];
+    if (!/^ESP_\d{8}$/.test(espCode)) {
+        ctx.reply(
+            "❌ Invalid format! Use ESP_ followed by 8 digits (e.g., ESP_12345678).",
+        );
+        return;
+    }
 
-    // Create the message to send
-    const message = `
-        🌱 Irrigation Status for ESP32 (${esp_code})
-
-        Current Values:
-        - 🌡️ Air Temperature: ${airTemp}°C
-        - 💧 Air Humidity: ${airHumidity}%
-        - 🌿 Soil Moisture: ${soilMoisture}%
-
-        Optimal Ranges:
-        - 🌡️ Air Temperature: ${minAirTemp}°C - ${maxAirTemp}°C
-        - 💧 Air Humidity: ${minAirHumidity}% - ${maxAirHumidity}%
-        - 🌿 Soil Moisture: ${minSoilMoisture}%
-
-        Irrigation Status:
-        - 💧 Irrigation: ${isIrrigating ? "Active ✅" : "Inactive ❌"}
-        `;
-
-    // Send the message to Telegram
-    bot.telegram
-        .sendMessage(telegramId, message)
-        .then(() => {
-            res.json({ success: true });
-            console.log(
-                `Notification sent to user ${telegramId} for ESP32 ${esp_code}.`,
-            );
-        })
-        .catch((error) => {
-            console.error("Error sending message:", error);
-            res.status(500).json({ error: "Failed to send message" });
-        });
+    espToChatMap.set(espCode, ctx.chat.id);
+    ctx.reply(`✅ ESP32 (${espCode}) successfully registered to your account!`);
 });
 
-// Health check endpoint
-app.get("/health", (req, res) => {
-    res.status(200).send("Server is up and running!");
-    console.log("Health check passed.");
+// Command to start the irrigation
+bot.command("start_irrigation", (ctx) => {
+    mqttClient.publish("esp32/irrigation/start", "1");
+    ctx.reply("🚰 Irrigation started!");
 });
 
-// Start the server
-app.listen(process.env.PORT || 3000, () => {
-    console.log("Server started on port", process.env.PORT || 3000);
+// Command to stop the irrigation
+bot.command("stop_irrigation", (ctx) => {
+    mqttClient.publish("esp32/irrigation/stop", "0");
+    ctx.reply("🛑 Irrigation stopped!");
 });
 
-// Launch the bot
-bot.launch()
-    .then(() => console.log("Telegram bot started"))
-    .catch((err) => console.error("Failed to start the bot:", err));
+// Command to display help
+bot.command("help", (ctx) => {
+    ctx.reply(
+        `
+ℹ️ <b>Bot Usage Guide</b>
+
+1️⃣ <b>ESP32 Registration:</b>
+   ➝ Use /register ESP_XXXXXXXX to associate your ESP32 with the bot.
+
+2️⃣ <b>Irrigation Control:</b>
+   ➝ /start_irrigation to start the irrigation.
+   ➝ /stop_irrigation to stop it.
+
+3️⃣ <b>Useful Info:</b>
+   ➝ /help for this guide.
+`,
+        { parse_mode: "HTML" },
+    );
+});
+
+// Start the Telegram bot
+bot.launch().then(() => {
+    console.log("🤖 Telegram bot started successfully");
+});
+
+// Graceful shutdown handling
+process.on("SIGINT", () => {
+    bot.stop("SIGINT");
+    mqttClient.end();
+    console.log("❌ Telegram bot and MQTT connection closed");
+    process.exit(0);
+});
