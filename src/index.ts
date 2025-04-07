@@ -26,6 +26,7 @@ interface SensorData {
     airTemp: number;
     airHumidity: number;
     soilMoisture: number;
+    waterLevel: number;
     minAirTemp: number;
     maxAirTemp: number;
     minAirHumidity: number;
@@ -43,18 +44,21 @@ const espToChatMap = new Map<string, number>();
 
 mqttClient.on("connect", () => {
     console.log("✅ Connected to the MQTT broker");
-    mqttClient.subscribe("esp32/status");
+    mqttClient.subscribe("plants/irrigation");
 });
 
 mqttClient.on("message", (topic, message) => {
-    console.log(`📩 Message received on ${topic}: ${message.toString()}`);
+    const rawMessage = message.toString();
+    console.log(`📩 Message received on ${topic}: ${rawMessage}`);
 
-    if (topic === "esp32/status") {
-        const data: SensorData = JSON.parse(message.toString());
-        const chatId = espToChatMap.get(data.esp_code);
+    if (topic === "plants/irrigation") {
+        try {
+            const data: SensorData = JSON.parse(rawMessage);
 
-        if (chatId) {
-            const telegramMessage = `
+            const chatId = espToChatMap.get(data.esp_code);
+
+            if (chatId) {
+                const telegramMessage = `
 🌱 Irrigation Status for ESP32 (${data.esp_code})
 
 Current Values:
@@ -71,12 +75,17 @@ Irrigation Status:
 - 💧 Irrigation: ${data.isIrrigating ? "Active ✅" : "Inactive ❌"}
 `;
 
-            bot.telegram.sendMessage(chatId, telegramMessage);
-        } else {
-            console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
+                bot.telegram.sendMessage(chatId, telegramMessage);
+            } else {
+                console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
+            }
+        } catch (error) {
+            console.error("❌ Error parsing MQTT message as JSON:", error);
+            console.error("❗ Raw message received:", rawMessage);
         }
     }
 });
+
 
 bot.command("register", (ctx) => {
     const args = ctx.message.text.split(" ");
