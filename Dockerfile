@@ -1,23 +1,30 @@
-# Usa un'immagine base con Node.js
-FROM node:20
+# -----------------------------
+# 1. Build stage con tutte le deps
+# -----------------------------
+FROM node:20-alpine AS builder
 
-# Imposta la directory di lavoro all'interno del container
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Copia i file package per installare le dipendenze
 COPY package*.json ./
+RUN npm ci
 
-# Installa le dipendenze
-RUN npm install
-
-# Copia tutto il resto del codice
 COPY . .
-
-# Compila TypeScript
 RUN npm run build
 
-# Esponi la porta (se usi Express per l'interfaccia HTTP)
-EXPOSE 3000
+# ----------------------------
+# 2. Final stage senza dev deps
+# ----------------------------
+FROM node:20-alpine AS final
 
-# Avvia l'app
-CMD ["npm", "start"]
+WORKDIR /app
+
+# Copia solo il dist e node_modules puliti
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+
+# Rimuove le devDependencies dalla node_modules
+RUN npm prune --omit=dev
+
+EXPOSE 3000
+CMD ["node", "dist/index.js"]
