@@ -1,20 +1,26 @@
 {
-  "name": "nodejs",
+  "name": "plant-sense-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Telegram bot for monitoring and controlling irrigation via ESP32 and MQTT",
+  "main": "dist/index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "install-project": "npm install",
+    "start": "node dist/index.js",
+    "build": "tsc --outDir dist",
+    "build-and-start": "npm run build && npm run start"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "dependencies": {
-    "@types/node": "^18.0.6",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "express": "^5.1.0",
     "mqtt": "^5.10.4",
     "telegraf": "^4.16.3"
   },
-  "description": ""
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "typescript": "^5.8.3"
+  }
 }
