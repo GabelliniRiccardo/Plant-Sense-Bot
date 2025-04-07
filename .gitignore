@@ -133,3 +133,4 @@ dist
 .breakpoints
 /.idea/
 /.env.docker
+/raspberry.docker-compose.yml
