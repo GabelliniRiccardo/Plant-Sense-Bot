@@ -1,15 +1,15 @@
-import {Telegraf} from "telegraf";
+import { Telegraf } from "telegraf";
 import mqtt from "mqtt";
 import * as dotenv from 'dotenv';
-import {fileURLToPath} from 'url';
-import {dirname, resolve} from 'path';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
 
 // Get the current directory path
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Load the .env file from the root of the project
-dotenv.config({path: resolve(__dirname, '../.env')});
+dotenv.config({ path: resolve(__dirname, '../.env') });
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MQTT_BROKER = process.env.MQTT_BROKER;
@@ -35,14 +35,13 @@ interface SensorData {
     isIrrigating: boolean;
 }
 
-// MQTT topics
-const PLANT_STATUS_REQUEST_TOPIC = "plant/status/request";
-const PLANT_STATUS_RESPONSE_TOPIC = "plant/status/response";
-const PLANT_IRRIGATION_START_REQUEST = "plant/irrigation/start/request";
-const PLANT_IRRIGATION_START_RESPONSE = "plant/irrigation/start/response";
-const PLANT_IRRIGATION_STOP_REQUEST = "plant/irrigation/stop/request";
-const PLANT_IRRIGATION_STOP_RESPONSE = "plant/irrigation/stop/response";
+enum IrrigationStatus {
+    Inactive = 0,
+    Active = 1,
+}
 
+// MQTT topics (dynamic based on esp_code)
+const createTopic = (baseTopic: string, espCode: string) => baseTopic.replace('%s', espCode);
 
 const bot = new Telegraf(BOT_TOKEN);
 const mqttClient = mqtt.connect(MQTT_BROKER);
@@ -52,43 +51,48 @@ const espToChatMap = new Map<string, number>();
 
 mqttClient.on("connect", () => {
     console.log("✅ Connected to the MQTT broker");
-    mqttClient.subscribe(PLANT_STATUS_REQUEST_TOPIC);
-    mqttClient.subscribe(PLANT_STATUS_RESPONSE_TOPIC);
-    mqttClient.subscribe(PLANT_IRRIGATION_START_REQUEST);
-    mqttClient.subscribe(PLANT_IRRIGATION_START_RESPONSE);
-    mqttClient.subscribe(PLANT_IRRIGATION_STOP_REQUEST);
-    mqttClient.subscribe(PLANT_IRRIGATION_STOP_RESPONSE);
+    // Example subscription: Subscribe to dynamic topics
+    // You can dynamically subscribe to any topic related to ESP32s as they are registered
 });
 
 mqttClient.on("message", (topic, message) => {
     const rawMessage = message.toString();
     console.log(`📩 Message received on ${topic}: ${rawMessage}`);
 
-    if (topic === PLANT_STATUS_RESPONSE_TOPIC) {
-        let data: SensorData = {
-            esp_code: "",
-            airTemp: 0,
-            airHumidity: 0,
-            soilMoisture: 0,
-            waterLevel: 0,
-            minAirTemp: 0,
-            maxAirTemp: 0,
-            minAirHumidity: 0,
-            maxAirHumidity: 0,
-            minSoilMoisture: 0,
-            isIrrigating: false
-        };
-        try {
-            data = JSON.parse(rawMessage);
-        } catch (error) {
-            console.warn("⚠️ Malformed JSON, ignoring message:", rawMessage);
-            return;
-        }
+    const espCodeMatch = topic.match(/plant\/status\/response\/(ESP_\d{8})/);
+    if (espCodeMatch) {
+        const espCode = espCodeMatch[1];
 
-        const chatId = espToChatMap.get(data.esp_code);
+        // Handle the irrigation status response
+        if (topic === createTopic('plant/status/response/%s', espCode)) {
+            let data: SensorData = {
+                esp_code: "",
+                airTemp: 0,
+                airHumidity: 0,
+                soilMoisture: 0,
+                waterLevel: 0,
+                minAirTemp: 0,
+                maxAirTemp: 0,
+                minAirHumidity: 0,
+                maxAirHumidity: 0,
+                minSoilMoisture: 0,
+                isIrrigating: false
+            };
+            try {
+                data = JSON.parse(rawMessage);
+            } catch (error) {
+                console.warn("⚠️ Malformed JSON, ignoring message:", rawMessage);
+                return;
+            }
 
-        if (chatId) {
-            const telegramMessage = `
+            const chatId = espToChatMap.get(data.esp_code);
+
+            if (chatId) {
+                const irrigationStatusMessage = data.isIrrigating
+                    ? "💧 Irrigation active ✅"
+                    : "🛑 Irrigation inactive ❌";
+
+                const telegramMessage = `
 🌱 Irrigation Status for ESP32 (${data.esp_code})
 
 Current Values:
@@ -101,32 +105,13 @@ Optimal Ranges:
 - 💧 Air Humidity: ${data.minAirHumidity}% - ${data.maxAirHumidity}%
 
 Irrigation Status:
-- 💧 Irrigation: ${data.isIrrigating ? "Active ✅" : "Inactive ❌"}
+- ${irrigationStatusMessage}
 `;
 
-            bot.telegram.sendMessage(chatId, telegramMessage);
-        } else {
-            console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
-        }
-    }
-
-    // Handle irrigation start response
-    if (topic === PLANT_IRRIGATION_START_RESPONSE) {
-        // Handle start irrigation response
-        const response = JSON.parse(rawMessage);
-        const chatId = espToChatMap.get(response.esp_code);
-        if (chatId) {
-            bot.telegram.sendMessage(chatId, "🚰 Irrigation started successfully!");
-        }
-    }
-
-    // Handle irrigation stop response
-    if (topic === PLANT_IRRIGATION_STOP_RESPONSE) {
-        // Handle stop irrigation response
-        const response = JSON.parse(rawMessage);
-        const chatId = espToChatMap.get(response.esp_code);
-        if (chatId) {
-            bot.telegram.sendMessage(chatId, "🛑 Irrigation stopped successfully!");
+                bot.telegram.sendMessage(chatId, telegramMessage);
+            } else {
+                console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
+            }
         }
     }
 });
@@ -146,6 +131,11 @@ bot.command("register", (ctx) => {
 
     espToChatMap.set(espCode, ctx.chat.id);
     ctx.reply(`✅ ESP32 (${espCode}) successfully registered to your account!`);
+
+    // Subscribe to the topics dynamically based on the registered esp_code
+    mqttClient.subscribe(createTopic('plant/status/response/%s', espCode));
+    mqttClient.subscribe(createTopic('plant/irrigation/start/response/%s', espCode));
+    mqttClient.subscribe(createTopic('plant/irrigation/stop/response/%s', espCode));
 });
 
 bot.command("start_irrigation", (ctx) => {
@@ -154,7 +144,7 @@ bot.command("start_irrigation", (ctx) => {
         return ctx.reply("❌ Please provide the ESP32 code. Example: /start_irrigation ESP_XXXXXXXX");
     }
 
-    mqttClient.publish(PLANT_IRRIGATION_START_REQUEST, JSON.stringify({esp_code: espCode}));
+    mqttClient.publish(createTopic('plant/irrigation/start/request/%s', espCode), JSON.stringify({ esp_code: espCode }));
     ctx.reply("🚰 Irrigation started!");
 });
 
@@ -164,7 +154,7 @@ bot.command("stop_irrigation", (ctx) => {
         return ctx.reply("❌ Please provide the ESP32 code. Example: /stop_irrigation ESP_XXXXXXXX");
     }
 
-    mqttClient.publish(PLANT_IRRIGATION_STOP_REQUEST, JSON.stringify({esp_code: espCode}));
+    mqttClient.publish(createTopic('plant/irrigation/stop/request/%s', espCode), JSON.stringify({ esp_code: espCode }));
     ctx.reply("🛑 Irrigation stopped!");
 });
 
@@ -174,7 +164,8 @@ bot.command("get_status", (ctx) => {
         return ctx.reply("❌ Please provide the ESP32 code. Example: /get_status ESP_XXXXXXXX");
     }
 
-    mqttClient.publish(PLANT_STATUS_REQUEST_TOPIC, JSON.stringify({esp_code: espCode}));
+    mqttClient.publish(createTopic('plant/status/request/%s', espCode), JSON.stringify({ esp_code: espCode }));
+    console.warn(createTopic('plant/status/request/%s', espCode))
     ctx.reply("📩 Status request sent!");
 });
 
@@ -196,7 +187,7 @@ bot.command("help", (ctx) => {
 4️⃣ <b>Useful Info:</b>
    ➝ /help for this guide.
 `,
-        {parse_mode: "HTML"}
+        { parse_mode: "HTML" }
     );
 });
 
