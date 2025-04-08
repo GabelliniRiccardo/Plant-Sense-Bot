@@ -132,3 +132,5 @@ dist
 # Replit debugger
 .breakpoints
 /.idea/
+/.env.docker
+/raspberry.docker-compose.yml
