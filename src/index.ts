@@ -22,18 +22,17 @@ if (!BOT_TOKEN || !MQTT_BROKER) {
 }
 
 interface SensorData {
-    esp_code: string;
-    airTemp: number;
-    airHumidity: number;
-    soilMoisture: number;
-    waterLevel: number;
-    minAirTemp: number;
-    maxAirTemp: number;
-    minAirHumidity: number;
-    maxAirHumidity: number;
-    minSoilMoisture: number;
-    maxSoilMoisture: number;
-    isIrrigating: boolean;
+    esp_code: string
+    airTemp: number
+    airHumidity: any
+    soilMoisture: number
+    waterLevel: number
+    minAirTemp: number
+    maxAirTemp: number
+    minAirHumidity: number
+    maxAirHumidity: number
+    minSoilMoisture: number
+    isIrrigating: boolean
 }
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -52,8 +51,25 @@ mqttClient.on("message", (topic, message) => {
     console.log(`📩 Message received on ${topic}: ${rawMessage}`);
 
     if (topic === "plants/irrigation") {
+        let data: SensorData = {
+            esp_code: "",
+            airTemp: 0,
+            airHumidity: 0,
+            soilMoisture: 0,
+            waterLevel: 0,
+            minAirTemp: 0,
+            maxAirTemp: 0,
+            minAirHumidity: 0,
+            maxAirHumidity: 0,
+            minSoilMoisture: 0,
+            isIrrigating: false
+        };
         try {
-            const data: SensorData = JSON.parse(rawMessage);
+            data = JSON.parse(rawMessage);
+        } catch (error) {
+            console.warn("⚠️ Malformed JSON, ignoring message:", rawMessage);
+            return;
+        }
 
             const chatId = espToChatMap.get(data.esp_code);
 
@@ -69,7 +85,6 @@ Current Values:
 Optimal Ranges:
 - 🌡️ Air Temperature: ${data.minAirTemp}°C - ${data.maxAirTemp}°C
 - 💧 Air Humidity: ${data.minAirHumidity}% - ${data.maxAirHumidity}%
-- 🌿 Soil Moisture: ${data.minSoilMoisture}% - ${data.maxSoilMoisture}%
 
 Irrigation Status:
 - 💧 Irrigation: ${data.isIrrigating ? "Active ✅" : "Inactive ❌"}
@@ -79,10 +94,7 @@ Irrigation Status:
             } else {
                 console.log(`⚠️ No user associated with ESP32 ${data.esp_code}`);
             }
-        } catch (error) {
-            console.error("❌ Error parsing MQTT message as JSON:", error);
-            console.error("❗ Raw message received:", rawMessage);
-        }
+
     }
 });
 
